@@ -9,35 +9,64 @@ name: Build Unsigned iOS IPA
 #      需把 ios-build 打包成 tar.gz 并按 45MB 切成 ios-build.part0、part1 ...
 #      （用 tools/pack-ios.ps1 一条命令即可完成切分与上传）
 #
-# 触发方式：手动。分卷全部推完之后，在 Actions 页面点一次 Run workflow，
-# 避免分卷没传齐时自动触发导致一串红叉。
+# 触发方式（二选一）：
+#   A. 推 .ci/trigger-ipa-build 这个标记文件 —— 分卷全部传完后推它，自动开跑；
+#   B. 在 Actions 页面点 Run workflow。
+# 分卷没传齐时不会自动触发，避免一串红叉。
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.ci/trigger-ipa-build'
+
+concurrency:
+  group: build-ipa
+  cancel-in-progress: false
 
 jobs:
   build-ipa:
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
 
+      - name: 检查环境
+        run: |
+          set -e
+          echo "=== Xcode ==="
+          xcodebuild -version
+          echo "=== 磁盘 ==="
+          df -h /
+          echo "=== 分卷清单 ==="
+          ls -l ios-build.part* || true
+
       - name: 还原 ios-build 目录
         run: |
           set -e
           if ls ios-build.part* >/dev/null 2>&1; then
-            echo "检测到分卷，正在合并并解压 ..."
+            echo "检测到分卷，正在合并 ..."
             cat ios-build.part* > ios-build.tar.gz
+            ls -lh ios-build.tar.gz
+            echo "正在解压 ..."
             tar -xzf ios-build.tar.gz
           fi
           if [ ! -d ios-build ]; then
             echo "::error::缺少 ios-build 目录，请先在 Unity 里 Build 导出 iOS 工程"
             exit 1
           fi
-          echo "工程内容："
+          echo "=== 工程内容 ==="
           ls ios-build | head -30
+          echo "=== 关键文件 ==="
+          ls -d ios-build/Unity-iPhone.xcodeproj ios-build/Classes ios-build/Libraries ios-build/Il2CppOutputProject 2>&1
+
+      - name: 查看 Xcode 工程结构
+        working-directory: ios-build
+        run: |
+          set +e
+          xcodebuild -list -project Unity-iPhone.xcodeproj 2>&1 | head -40
 
       - name: 编译 Xcode 工程（未签名）
         working-directory: ios-build
@@ -49,23 +78,43 @@ jobs:
             -scheme Unity-iPhone \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            ENABLE_ONLY_ACTIVE_ARCH=NO
+
+      - name: 定位产物
+        working-directory: ios-build
+        run: |
+          set -e
+          echo "=== Products 目录 ==="
+          ls -la build/Build/Products/Release-iphoneos/ || true
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::没有找到 .app 产物"
+            exit 1
+          fi
+          echo "App = $APP_PATH"
+          du -sh "$APP_PATH"
 
       - name: 打包成 .ipa
         working-directory: ios-build
         run: |
           set -e
           APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
-          echo "App: $APP_PATH"
+          rm -rf Payload
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           zip -qry ../ar-issue-unsigned.ipa Payload
           ls -lh ../ar-issue-unsigned.ipa
+          echo "=== ipa 内 Info.plist 摘要 ==="
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP_PATH/Info.plist" || true
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
@@ -74,3 +123,10 @@ jobs:
           path: ar-issue-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: 失败时输出关键日志
+        if: failure()
+        run: |
+          echo "=== 最近一次 xcodebuild 日志尾部 ==="
+          find ios-build/build -name "*.xcactivitylog" 2>/dev/null | head -3
+          ls -la ios-build/build 2>/dev/null | head -20
