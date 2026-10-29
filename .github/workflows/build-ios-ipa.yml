@@ -1,0 +1,76 @@
+name: Build Unsigned iOS IPA
+
+# 没有 Mac 电脑时，用 GitHub 免费的 macOS runner 把 Unity 导出的
+# Xcode 工程编译成未签名 .ipa，再用 Windows 上的 Sideloadly 装机。
+#
+# 使用前提：
+#   1. 本地 Unity 已 File -> Build Settings -> iOS -> Build 导出 ios-build 目录；
+#   2. 因 libiPhone-lib.a(约197MB) / libil2cpp.a(约65MB) 超过 GitHub 单文件 100MB 限制，
+#      需把 ios-build 打包成 tar.gz 并按 45MB 切成 ios-build.part0、part1 ...
+#      （用 tools/pack-ios.ps1 一条命令即可完成切分与上传）
+#
+# 触发方式：手动。分卷全部推完之后，在 Actions 页面点一次 Run workflow，
+# 避免分卷没传齐时自动触发导致一串红叉。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 还原 ios-build 目录
+        run: |
+          set -e
+          if ls ios-build.part* >/dev/null 2>&1; then
+            echo "检测到分卷，正在合并并解压 ..."
+            cat ios-build.part* > ios-build.tar.gz
+            tar -xzf ios-build.tar.gz
+          fi
+          if [ ! -d ios-build ]; then
+            echo "::error::缺少 ios-build 目录，请先在 Unity 里 Build 导出 iOS 工程"
+            exit 1
+          fi
+          echo "工程内容："
+          ls ios-build | head -30
+
+      - name: 编译 Xcode 工程（未签名）
+        working-directory: ios-build
+        run: |
+          set -e
+          chmod +x MapFileParser.sh Usability.sh process_symbols.sh 2>/dev/null || true
+          xcodebuild \
+            -project Unity-iPhone.xcodeproj \
+            -scheme Unity-iPhone \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: 打包成 .ipa
+        working-directory: ios-build
+        run: |
+          set -e
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "App: $APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry ../ar-issue-unsigned.ipa Payload
+          ls -lh ../ar-issue-unsigned.ipa
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ar-issue-unsigned-ipa
+          path: ar-issue-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

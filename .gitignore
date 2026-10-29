@@ -1,0 +1,37 @@
+# ---- Unity ----
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+
+# ---- Node / Vite ----
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
+# ---- 运行期数据（后端会自动生成）----
+backend/issues.json
+backend/issues.json.tmp
+
+# ---- iOS 导出产物（原始目录太大，改用 45MB 分卷 ios-build.part* 提交）----
+ios-build/
+ios-build-backup/
+*.tar.gz
+*.ipa
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
