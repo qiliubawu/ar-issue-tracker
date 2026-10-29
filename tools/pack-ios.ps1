@@ -1,4 +1,4 @@
-# 把 Unity 导出的 ios-build 打成分卷并推送到 GitHub
+﻿# 把 Unity 导出的 ios-build 打成分卷并推送到 GitHub
 #
 # 用法（在仓库根目录，即包含 ios-build 的那一层）：
 #   powershell -ExecutionPolicy Bypass -File tools\pack-ios.ps1 -RepoUrl https://github.com/你的用户名/ar-issue-tracker.git
