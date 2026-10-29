@@ -11,7 +11,8 @@
 
 param(
     [Parameter(Mandatory = $true)][string]$RepoUrl,
-    [int]$PartSizeMB = 45
+    [int]$PartSizeMB = 45,
+    [switch]$SkipProxyDetect
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,10 +105,50 @@ if ($needPack) {
 
 # ---------- 3. git 初始化 ----------
 Write-Step "配置 git 仓库"
-git config --global core.longpaths true
-git config --global http.postBuffer 524288000
-
 if (-not (Test-Path ".git")) { git init | Out-Null }
+git config --global core.longpaths true
+git config --local http.postBuffer 524288000
+git config --local http.version HTTP/1.1
+git config --local http.lowSpeedLimit 1000
+git config --local http.lowSpeedTime 120
+
+# 直连 github.com 在国内经常被重置（curl 55 / Connection was reset），
+# 这里自动探测本机可用的 HTTP 代理并写进仓库配置，省得手动设置。
+if (-not $SkipProxyDetect) {
+    Write-Step "探测可用的 GitHub 通道"
+    $proxyCandidates = @(7897, 7890, 10809, 10808, 1080, 2080, 8888)
+    $foundProxy = $null
+    foreach ($port in $proxyCandidates) {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        try {
+            $tcp.Connect("127.0.0.1", $port)
+            if ($tcp.Connected) {
+                $probe = "http://127.0.0.1:$port"
+                $code = & curl.exe -s -x $probe -o NUL -w "%{http_code}" -m 8 https://github.com 2>$null
+                if ($code -eq "200" -or $code -eq "301" -or $code -eq "302") {
+                    $foundProxy = $probe
+                    Write-Ok "端口 $port 可访问 GitHub（HTTP $code）"
+                    break
+                } else {
+                    Write-Warn2 "端口 $port 已监听但访问 GitHub 失败（HTTP $code），跳过"
+                }
+            }
+        } catch {
+            # 端口未开放，继续下一个
+        } finally {
+            $tcp.Close()
+        }
+    }
+    if ($foundProxy) {
+        git config --local http.proxy $foundProxy
+        Write-Ok "已为本次推送设置代理 $foundProxy"
+    } else {
+        git config --local --unset http.proxy 2>$null
+        Write-Warn2 "没探测到可用代理，将尝试直连。若报 curl 55 / Connection was reset，"
+        Write-Warn2 "请打开你的代理软件（Clash / v2ray 等）后重跑本脚本。"
+    }
+}
+
 git branch -M main 2>$null
 
 $existing = git remote 2>$null
@@ -150,8 +191,24 @@ for ($i = 0; $i -lt $count; $i++) {
     else { Write-Host "$name 上传失败，请重新运行本脚本（已上传的会自动跳过）" -ForegroundColor Red; exit 1 }
 }
 
+# ---------- 6. 推标记文件，触发云端编译 ----------
+Write-Step "推触发标记，启动 GitHub Actions 云端编译"
+New-Item -ItemType Directory -Force -Path ".ci" | Out-Null
+Set-Content -Path ".ci\trigger-ipa-build" -Value ("triggered at " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss")) -Encoding Ascii
+git add ".ci/trigger-ipa-build"
+git commit -m "ci: trigger ipa build" 2>$null
+$ok = $false
+for ($try = 1; $try -le 3; $try++) {
+    git push origin main
+    if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+    Write-Warn2 "触发标记第 $try 次推送失败，10 秒后重试"
+    Start-Sleep -Seconds 10
+}
+if ($ok) { Write-Ok "已触发云端编译" } else { Write-Warn2 "标记未推上去，可在 Actions 页面手动点 Run workflow" }
+
 Write-Step "全部完成"
-Write-Host "接下来：" -ForegroundColor Cyan
-Write-Host "  1. 打开 GitHub 仓库的 Actions 页面"
-Write-Host "  2. 左侧选 Build Unsigned iOS IPA -> 右侧 Run workflow"
-Write-Host "  3. 等 4~6 分钟变绿勾，进任务页底部 Artifacts 下载 ar-issue-unsigned-ipa"
+Write-Host "接下来（约 10~15 分钟）：" -ForegroundColor Cyan
+Write-Host "  1. 打开 https://github.com/qiliubawu/ar-issue-tracker/actions"
+Write-Host "  2. 等 Build Unsigned iOS IPA 跑完变绿勾"
+Write-Host "  3. 进任务页底部 Artifacts 下载 ar-issue-unsigned-ipa（zip，解压得到 .ipa）"
+Write-Host "  4. 用 Sideloadly 装到 iPhone（Apple ID 免费签名，7 天有效）"

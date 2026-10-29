@@ -159,3 +159,46 @@ Actions 运行成功后，在 `Artifacts` 里下载 `ar-issue-unsigned-ipa`，�
 AI 方案要求把 `Active Input Handling` 改成 `Both` 再重启编辑器，否则脚本里的 `Input.touchCount` 会抛 `InvalidOperationException`。但 AR Mobile 模板默认就是 `Input System Package (New)`，改设置 + 重启这一步对新手很不友好。
 
 **修改**：脚本改用编译宏双路实现——`#if ENABLE_LEGACY_INPUT_MANAGER` 走 `Input.touchCount` / `Input.GetMouseButtonDown`，`#elif ENABLE_INPUT_SYSTEM` 走 `EnhancedTouch` / `Mouse.current`，两条路径都能同时支持真机触摸与编辑器鼠标。同时把防误触判断从 `IsPointerOverGameObject(fingerId)` 改成用屏幕坐标自己做 `GraphicRaycaster.RaycastAll`，避免新旧输入系统下 fingerId 映射不一致的问题。改完后**无需修改任何 Player Settings、无需重启编辑器**。
+
+### 7. git push 被重置（curl 55 / Connection was reset）—— 代理问题
+
+第一次推分卷时报：
+
+```
+error: RPC failed; curl 55 Send failure: Connection was reset
+send-pack: unexpected disconnect while reading sideband packet
+fatal: unable to access ...: Failed to connect to github.com:443 after 21280 ms
+```
+
+排查结论：git 在**直连** github.com，而本机直连被重置。实测三条通道：
+
+| 通道 | 结果 |
+|---|---|
+| 直连 `github.com:443` | 15 秒超时，`000` |
+| 环境默认代理 `127.0.0.1:65233` | 10 秒超时，`000` |
+| 本机 Clash `127.0.0.1:7897` | **200，3.1 秒** |
+
+**修改**：仓库级写入 `http.proxy=http://127.0.0.1:7897`、`http.version=HTTP/1.1`（HTTP/2 经代理时极易触发 RPC failed）、`http.postBuffer=524288000`、`http.lowSpeedLimit/lowSpeedTime` 让卡死时能快速失败重试。改完后 6 个分卷（233MB）全部一次成功，用时 81 秒。
+
+`tools/pack-ios.ps1` 也加了自动探测：依次试 7897/7890/10809/10808/1080/2080/8888，用 `curl -x` 探一次 `https://github.com` 返回 200 才采用，可用 `-SkipProxyDetect` 跳过。
+
+### 8. 触发方式：从“手动点按钮”改成“推标记文件”
+
+`workflow_dispatch` 只能人工在网页点，本机没有 `gh` CLI 也没有 PAT。改成同时监听 `push: paths: ['.ci/trigger-ipa-build']`，分卷全部推完后再推这个标记文件即可自动开跑；标记文件在分卷之前不会存在，因此也不会出现“分卷没传齐就自动跑出一串红叉”。
+
+### 9. 首次云端编译结果（成功）
+
+run #1 `Build Unsigned iOS IPA`，10 个步骤全绿，用时约 6 分钟：
+
+| 检查项 | 结果 |
+|---|---|
+| ipa 体积 | 34.0 MB |
+| 签名状态 | 未签名（无 `_CodeSignature`、无 embedded 描述文件），符合预期 |
+| 架构 | arm64（`UnityFramework` 86MB） |
+| 包名 | `com.unity.template.armobile`（Unity 模板默认值，装机时改掉） |
+| 最低系统 | iOS 12.0 |
+| 设备要求 | `arm64 / metal / arkit` |
+| 相机文案 | 需要使用相机进行园区AR巡检平面检测 |
+| ATS | `NSAllowsArbitraryLoads = true`，手机可直连 `http://` 后端 |
+
+顺带把脚本里的 `serverUrl` 默认值从占位的 `192.168.1.100` 改成实际局域网地址 `192.168.10.11`，以后重新打包不用再手动改。

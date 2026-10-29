@@ -65,8 +65,8 @@ public class ARIssueReporter : MonoBehaviour
     public ARPlaneManager planeManager;
 
     [Header("后端地址")]
-    [Tooltip("真机测试时改成电脑的局域网 IP，例如 http://192.168.10.11:8080")]
-    public string serverUrl = "http://192.168.1.100:8080";
+    [Tooltip("真机测试时改成电脑的局域网 IP；编辑器里用 http://localhost:8080")]
+    public string serverUrl = "http://192.168.10.11:8080";
 
     [Header("标记外观")]
     public float markerScale = 0.1f;
